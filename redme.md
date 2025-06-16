@@ -33,7 +33,7 @@ A clean, modular blog backend with:
 - `POST /posts` → Create a new post  
 - `GET /posts` → Get all posts  
 - `GET /posts/:id` → Get a single post  
-- `PUT /posts/:id` → Update a post  
+- `PATCH /posts/:id` → Update a post  
 - `DELETE /posts/:id` → Delete a post  
 
 ---

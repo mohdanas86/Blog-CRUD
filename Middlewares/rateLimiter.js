@@ -1,7 +1,7 @@
 import redis from "../config/redisClient.js";
 
 const MAX_LIMIT = 2;
-const WINDOW = 30;
+const WINDOW = process.env.Ex || 60; // Default to 60 seconds if not set in environment variables
 
 const rateLimiter = async (req, res, next) => {
   try {
