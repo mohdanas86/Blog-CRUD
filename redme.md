@@ -93,5 +93,4 @@ A clean, modular blog backend with:
 - Redis (caching, TTL, rate limiting)  
 - CRUD operations  
 - RESTful API design  
-- Query params, pagination, relationships  
-
+- Query params, pagination, relationships
