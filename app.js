@@ -12,6 +12,7 @@ const app = express();
 app.use(express.json());
 app.use(bodyParser.json({}));
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true }));
 
 // database connection - now with proper error handling
 connection();
@@ -24,8 +25,11 @@ app.get("/", (req, res) => {
 // post routes
 import PostRouter from "./Routes/PostRouter.js";
 import rateLimiter from "./Middlewares/rateLimiter.js";
-app.use(rateLimiter); // Apply rate limiting middleware
+// app.use(rateLimiter); // Apply rate limiting middleware
 app.use("/api", PostRouter);
+
+import CommentRouter from "./Routes/CommentRouter.js";
+app.use("/api", CommentRouter);
 
 // server setup
 const server = http.createServer(app);
