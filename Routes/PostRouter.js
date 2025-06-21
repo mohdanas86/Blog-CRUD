@@ -7,35 +7,51 @@ import commentModel from "../Models/commentModel.js";
 const PostRouter = express.Router();
 
 /**
- * @desc Get all posts
+ * @desc Get all posts (with optional filtering & pagination)
  * @route GET /api/posts
  * @access Public
  * @rateLimit no limit
  */
 PostRouter.get("/posts", async (req, res) => {
   try {
-    // check redis cache for posts
-    const cachedPosts = await redis.get("posts");
-    if (cachedPosts) {
-      return res.status(201).json({
+    const { tag, limit = 10, page = 1 } = req.query;
+    const parsedLimit = parseInt(limit);
+    const parsedPage = parseInt(page);
+    const skip = (parsedPage - 1) * parsedLimit;
+
+    // Build filter object
+    const filter = tag ? { tags: tag } : {};
+
+    // Build cache key
+    const cacheKey = `posts:tag=${tag || "all"}:limit=${parsedLimit}:page=${parsedPage}`;
+    const cachedData = await redis.get(cacheKey);
+
+    if (cachedData) {
+      return res.status(200).json({
         message: "Posts fetched from cache",
-        data: JSON.parse(cachedPosts),
+        data: JSON.parse(cachedData),
       });
     }
-    // If not in cache, fetch from database
-    // and store in cache
-    // Fetch all posts from the database
-    const posts = await postModel.find().sort({ createdAt: -1 });
-    await redis.set(
-      "posts",
-      JSON.stringify(posts),
-      "EX",
-      process.env.EXP || 60
-    );
+
+    const posts = await postModel.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(parsedLimit)
+      .skip(skip);
+
+    const totalPosts = await postModel.countDocuments(filter);
+
+    const responseData = {
+      totalPosts,
+      page: parsedPage,
+      pageSize: posts.length,
+      posts,
+    };
+
+    await redis.set(cacheKey, JSON.stringify(responseData), "EX", process.env.EXP || 60);
 
     return res.status(200).json({
       message: "Posts fetched successfully",
-      data: posts,
+      data: responseData,
     });
   } catch (err) {
     return res.status(500).json({
@@ -68,8 +84,9 @@ PostRouter.post("/posts", rateLimiter, async (req, res) => {
     });
 
     const savedPost = await newPost.save();
+
     if (savedPost) {
-      await redis.del("posts"); // Invalidate the cache for posts
+      await redis.del("posts"); // Invalidate cache (note: consider invalidating pattern-based keys if needed)
       return res.status(201).json({
         message: "Post created successfully",
         post: savedPost,
@@ -84,43 +101,48 @@ PostRouter.post("/posts", rateLimiter, async (req, res) => {
 });
 
 /**
- * @desc Get a single post by ID
+ * @desc Get a single post by ID (with comments)
  * @route GET /api/posts/:id
  * @access Public
  * @rateLimit no limit
  */
 PostRouter.get("/posts/:id", async (req, res) => {
   const { id } = req.params;
-  let key = `post:${id}`;
-  let catchData = await redis.get(key);
+  const cacheKey = `post:${id}`;
+  // On viewing a post
+  await redis.incr(`post:${id}:views:buffer`); // Buffer to sync later
+  await redis.incr(`post:${id}:views:total`);  // Optional: real-time total
+
   try {
-    if (catchData) {
+    const cachedPost = await redis.get(cacheKey);
+    if (cachedPost) {
       return res.status(200).json({
-        message: "checked cache",
-        data: JSON.parse(catchData),
+        message: "Post fetched from cache",
+        data: JSON.parse(cachedPost),
       });
     }
 
-    // If not in cache, fetch from database
     const post = await postModel.findById(id);
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
     const comments = await commentModel.find({ postId: id }).sort({ createdAt: -1 });
 
-    // If post or comments are found, store in cache
     const postData = {
       ...post.toObject(),
       comments: comments || [],
-    }
-    if (post || comments) {
-      await redis.set(key, JSON.stringify(postData), "Ex", process.env.EX || 60);
-      return res.status(200).json({
-        message: "Post Fetched",
-        data: postData,
-      });
-    }
+    };
 
+    await redis.set(cacheKey, JSON.stringify(postData), "EX", process.env.EXP || 60);
+
+    return res.status(200).json({
+      message: "Post fetched successfully",
+      data: postData,
+    });
   } catch (err) {
     return res.status(500).json({
-      message: "Internal server error",
+      message: "Internal Server Error",
       error: err.message,
     });
   }
@@ -137,24 +159,19 @@ PostRouter.patch("/posts/:id", rateLimiter, async (req, res) => {
     const { id } = req.params;
     const data = req.body;
 
-    // Invalidate Redis cache for this post
-    try {
-      await redis.del(`post:${id}`);
-    } catch (redisErr) {
-      return res
-        .status(400)
-        .json({ message: "Failed to clear cache:", error: redisErr.message });
+    await redis.del(`post:${id}`); // Clear individual post cache
+    await redis.del("posts");      // Optional: clear all posts list caches
+
+    const updatedPost = await postModel.findByIdAndUpdate(id, data, { new: true });
+
+    if (!updatedPost) {
+      return res.status(404).json({ message: "Post not found" });
     }
 
-    const updatePost = await postModel.findByIdAndUpdate({ _id: id }, data);
-    if (updatePost) {
-      await redis.del("posts"); // Invalidate the cache for all posts
-
-      return res.status(200).json({
-        message: "post updated successfully",
-        data: updatePost,
-      });
-    }
+    return res.status(200).json({
+      message: "Post updated successfully",
+      data: updatedPost,
+    });
   } catch (err) {
     return res.status(500).json({
       message: "Internal Server Error",
@@ -172,25 +189,21 @@ PostRouter.patch("/posts/:id", rateLimiter, async (req, res) => {
 PostRouter.delete("/posts/:id", rateLimiter, async (req, res) => {
   try {
     const { id } = req.params;
+
+    const post = await postModel.findById(id);
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    await postModel.findByIdAndDelete(id);
+
     await redis.del(`post:${id}`);
+    await redis.del("posts");
 
-    // check if post exists
-    const postExists = await postModel.findById(id);
-    if (!postExists) {
-      return res.json({
-        message: "Post not found",
-      });
-    }
-
-    // delete the post
-    const deletePost = await postModel.findByIdAndDelete(id);
-    if (deletePost) {
-      await redis.del("posts"); // Invalidate the cache for all posts
-      return res.status(200).json({
-        message: "Post deleted successfully",
-        data: deletePost,
-      });
-    }
+    return res.status(200).json({
+      message: "Post deleted successfully",
+      data: post,
+    });
   } catch (err) {
     return res.status(500).json({
       message: "Internal Server Error",
