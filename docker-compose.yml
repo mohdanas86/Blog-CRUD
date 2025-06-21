@@ -1,4 +1,3 @@
-version: "3.8"
 
 services:
   backend:
@@ -16,7 +15,6 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
-
   redis:
     image: redis:7-alpine
     container_name: redis
